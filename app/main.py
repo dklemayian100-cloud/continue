@@ -5,13 +5,22 @@ from sqlalchemy.orm import Session
 
 from .database import Base, engine, get_db
 from . import models, schemas
+from .auth import router as auth_router
+from .security import hash_password, get_current_user
 from .commissions import (
-    ticket_split, song_request_split, table_reservation_split,
+    ticket_split, song_request_split, table_reservation_split, record_ledger,
 )
+from .mpesa import stk_push
+import qrcode
+import io
+from fastapi.responses import StreamingResponse
+from .dashboard import router as dashboard_router
 
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="Aluta-style Nightlife API", version="0.1.0")
+app = FastAPI(title="Aluta-style Nightlife API", version="0.2.0")
+app.include_router(auth_router)
+app.include_router(dashboard_router)
 
 
 # ---------- Users ----------
@@ -23,7 +32,7 @@ def create_user(payload: schemas.UserCreate, db: Session = Depends(get_db)):
         phone_number=payload.phone_number,
         full_name=payload.full_name,
         email=payload.email,
-        password_hash=payload.password,  # NOTE: hash this in production
+        password_hash=hash_password(payload.password),
         role=payload.role,
         county=payload.county,
         town=payload.town,
@@ -32,6 +41,11 @@ def create_user(payload: schemas.UserCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(user)
     return user
+
+
+@app.get("/me", response_model=schemas.UserOut)
+def me(current: models.User = Depends(get_current_user)):
+    return current
 
 
 # ---------- Venues ----------
@@ -72,13 +86,13 @@ def create_event(payload: schemas.EventCreate, db: Session = Depends(get_db)):
     return event
 
 
-# ---------- Tickets (4% commission) ----------
+# ---------- Tickets (4% commission + ledger) ----------
 @app.post("/events/{event_id}/tickets", response_model=schemas.TicketOut)
 def buy_ticket(
     event_id: str,
-    buyer_id: str,
     ticket_type: str = "regular",
     db: Session = Depends(get_db),
+    current: models.User = Depends(get_current_user),
 ):
     event = db.get(models.Event, event_id)
     if not event:
@@ -91,7 +105,7 @@ def buy_ticket(
 
     ticket = models.Ticket(
         event_id=event_id,
-        buyer_id=buyer_id,
+        buyer_id=current.user_id,
         ticket_type=ticket_type,
         price=price,
         platform_fee=platform_fee,
@@ -102,67 +116,143 @@ def buy_ticket(
         event.status = "sold_out"
 
     db.add(ticket)
+    db.flush()  # populate ticket.ticket_id before ledger
+    record_ledger(
+        db,
+        reference_type="ticket",
+        reference_id=ticket.ticket_id,
+        gross=price,
+        platform_fee=platform_fee,
+        net_to_recipient=artist_payout,
+        recipient_id=event.venue_id,
+    )
     db.commit()
     db.refresh(ticket)
     return ticket
 
 
-# ---------- Song requests (5% or flat fee on tip) ----------
+# ---------- Ticket QR code ----------
+@app.get("/tickets/{ticket_id}/qr")
+def ticket_qr(
+    ticket_id: str,
+    db: Session = Depends(get_db),
+    current: models.User = Depends(get_current_user),
+):
+    ticket = db.get(models.Ticket, ticket_id)
+    if not ticket:
+        raise HTTPException(404, "Ticket not found")
+    if ticket.buyer_id != current.user_id and current.role != "admin":
+        raise HTTPException(403, "Not your ticket")
+
+    img = qrcode.make(ticket.qr_code)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return StreamingResponse(buf, media_type="image/png")
+
+
+# ---------- Song requests ----------
 @app.post("/song-requests", response_model=schemas.SongRequestOut)
-def create_song_request(payload: schemas.SongRequestCreate, db: Session = Depends(get_db)):
+def create_song_request(
+    payload: schemas.SongRequestCreate,
+    db: Session = Depends(get_db),
+    current: models.User = Depends(get_current_user),
+):
     platform_fee, dj_payout = song_request_split(payload.tip_amount)
 
     sr = models.SongRequest(
-        **payload.model_dump(),
+        user_id=current.user_id,
+        event_id=payload.event_id,
+        dj_id=payload.dj_id,
+        song_title=payload.song_title,
+        artist_name=payload.artist_name,
+        tip_amount=payload.tip_amount,
         platform_fee=platform_fee,
         dj_payout=dj_payout,
         status="pending",
     )
     db.add(sr)
+    db.flush()
+    if payload.tip_amount and payload.tip_amount > 0:
+        record_ledger(
+            db,
+            reference_type="tip",
+            reference_id=sr.request_id,
+            gross=Decimal(payload.tip_amount),
+            platform_fee=platform_fee,
+            net_to_recipient=dj_payout,
+            recipient_id=payload.dj_id,
+        )
     db.commit()
     db.refresh(sr)
     return sr
 
 
-# ---------- Tips ----------
-@app.post("/tips", response_model=schemas.TipOut)
-def create_tip(payload: schemas.TipCreate, db: Session = Depends(get_db)):
-    # Reuse song-request split for tips tied to requests; otherwise a flat 5%
-    from .commissions import _q, SONG_REQUEST_FEE_RATE
-    gross = Decimal(payload.gross_amount)
-    fee = _q(gross * SONG_REQUEST_FEE_RATE)
-    net = _q(gross - fee)
-
-    tip = models.Tip(
-        **payload.model_dump(),
-        platform_fee=fee,
-        net_amount=net,
-        status="pending",
-    )
-    db.add(tip)
-    db.commit()
-    db.refresh(tip)
-    return tip
-
-
-# ---------- Table reservations (10% commission) ----------
+# ---------- Table reservations ----------
 @app.post("/table-reservations", response_model=schemas.TableReservationOut)
 def create_table_reservation(
-    payload: schemas.TableReservationCreate, db: Session = Depends(get_db)
+    payload: schemas.TableReservationCreate,
+    db: Session = Depends(get_db),
+    current: models.User = Depends(get_current_user),
 ):
     fee = Decimal(payload.reservation_fee)
     platform_fee, venue_payout = table_reservation_split(fee)
 
     res = models.TableReservation(
-        **payload.model_dump(),
+        venue_id=payload.venue_id,
+        user_id=current.user_id,
+        event_id=payload.event_id,
+        table_number=payload.table_number,
+        party_size=payload.party_size,
+        reservation_fee=fee,
         platform_fee=platform_fee,
         venue_payout=venue_payout,
         status="pending",
+        reserved_for=payload.reserved_for,
     )
     db.add(res)
+    db.flush()
+    record_ledger(
+        db,
+        reference_type="reservation",
+        reference_id=res.reservation_id,
+        gross=fee,
+        platform_fee=platform_fee,
+        net_to_recipient=venue_payout,
+        recipient_id=payload.venue_id,
+    )
     db.commit()
     db.refresh(res)
     return res
+
+
+# ---------- M-Pesa STK Push ----------
+@app.post("/mpesa/stk-push/{ticket_id}")
+def initiate_ticket_payment(
+    ticket_id: str,
+    phone: str,
+    db: Session = Depends(get_db),
+    current: models.User = Depends(get_current_user),
+):
+    ticket = db.get(models.Ticket, ticket_id)
+    if not ticket:
+        raise HTTPException(404, "Ticket not found")
+    if ticket.buyer_id != current.user_id:
+        raise HTTPException(403, "Not your ticket")
+
+    result = stk_push(
+        phone=phone,
+        amount=int(ticket.price),
+        account_ref=ticket.ticket_id[:12],
+        description="Aluta ticket",
+    )
+    return {"stk_response": result}
+
+
+@app.post("/mpesa/callback")
+def mpesa_callback(payload: dict):
+    # In production: verify signature, update Ticket.status + Tip.status here
+    return {"ResultCode": 0, "ResultDesc": "Accepted"}
 
 
 @app.get("/health")

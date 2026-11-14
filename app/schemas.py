@@ -179,3 +179,37 @@ class TableReservationOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+class SongRequestStatusUpdate(BaseModel):
+    status: str   # accepted | playing | played | rejected
+    queue_position: Optional[int] = None
+
+
+class EarningsOut(BaseModel):
+    earned: Decimal
+    committed: Decimal
+    available: Decimal
+
+
+class PayoutCreate(BaseModel):
+    amount: Decimal
+    notes: Optional[str] = None
+
+
+class PayoutOut(BaseModel):
+    payout_id: str
+    recipient_type: str
+    recipient_id: str
+    amount: Decimal
+    status: str
+    requested_at: datetime
+    approved_at: Optional[datetime]
+    paid_at: Optional[datetime]
+    notes: Optional[str]
+
+    class Config:
+        from_attributes = True
+
+
+class ReservationStatusUpdate(BaseModel):
+    status: str   # confirmed | cancelled | no_show

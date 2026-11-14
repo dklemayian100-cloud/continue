@@ -43,3 +43,30 @@ def merchandise_split(sale_price: Decimal) -> tuple[Decimal, Decimal]:
     platform_fee = _q(sale_price * MERCH_FEE_RATE)
     seller_payout = _q(sale_price - platform_fee)
     return platform_fee, seller_payout
+
+# ---- Ledger helper (added in Phase 2) ----
+from sqlalchemy.orm import Session
+from . import models
+
+
+def record_ledger(
+    db: Session,
+    reference_type: str,
+    reference_id: str,
+    gross: Decimal,
+    platform_fee: Decimal,
+    net_to_recipient: Decimal,
+    recipient_id: str | None = None,
+    mpesa_ref: str | None = None,
+) -> models.TransactionLedger:
+    entry = models.TransactionLedger(
+        reference_type=reference_type,
+        reference_id=reference_id,
+        gross_amount=gross,
+        platform_fee=platform_fee,
+        net_to_recipient=net_to_recipient,
+        recipient_id=recipient_id,
+        mpesa_ref=mpesa_ref,
+    )
+    db.add(entry)
+    return entry

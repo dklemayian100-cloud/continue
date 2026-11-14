@@ -181,3 +181,39 @@ class TableReservation(Base):
     venue = relationship("Venue", back_populates="reservations")
     user = relationship("User", back_populates="reservations")
     event = relationship("Event", back_populates="reservations")
+
+class Payout(Base):
+    __tablename__ = "payouts"
+
+    payout_id = Column(String, primary_key=True, default=gen_uuid)
+    recipient_type = Column(
+        Enum("dj", "venue", name="payout_recipient_type"), nullable=False
+    )
+    recipient_id = Column(String, nullable=False, index=True)   # dj_id or venue_id
+    amount = Column(Numeric(12, 2), nullable=False)
+    status = Column(
+        Enum("requested", "approved", "paid", "rejected", name="payout_status"),
+        default="requested",
+    )
+    mpesa_conversation_id = Column(String, nullable=True)
+    mpesa_originator_id = Column(String, nullable=True)
+    requested_at = Column(DateTime, default=datetime.utcnow)
+    approved_at = Column(DateTime, nullable=True)
+    paid_at = Column(DateTime, nullable=True)
+    notes = Column(Text, nullable=True)
+
+class TransactionLedger(Base):
+    __tablename__ = "transaction_ledger"
+
+    ledger_id = Column(String, primary_key=True, default=gen_uuid)
+    reference_type = Column(
+        Enum("ticket", "tip", "reservation", "merch", name="ledger_ref_type"),
+        nullable=False,
+    )
+    reference_id = Column(String, nullable=False, index=True)
+    gross_amount = Column(Numeric(12, 2), nullable=False)
+    platform_fee = Column(Numeric(12, 2), nullable=False)
+    net_to_recipient = Column(Numeric(12, 2), nullable=False)
+    recipient_id = Column(String, nullable=True)
+    mpesa_ref = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
