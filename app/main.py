@@ -3,7 +3,7 @@ from decimal import Decimal
 from fastapi import FastAPI, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from .database import Base, engine, get_db
+from .database import get_db
 from . import models, schemas
 from .auth import router as auth_router
 from .security import hash_password, get_current_user
@@ -15,8 +15,6 @@ import qrcode
 import io
 from fastapi.responses import StreamingResponse
 from .dashboard import router as dashboard_router
-
-Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Aluta-style Nightlife API", version="0.2.0")
 app.include_router(auth_router)
