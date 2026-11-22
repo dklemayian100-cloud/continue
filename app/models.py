@@ -8,6 +8,10 @@ from sqlalchemy.orm import relationship
 
 from .database import Base
 
+from sqlalchemy import (
+    Column, String, Integer, Boolean, DateTime, Numeric, ForeignKey, Enum, Text, Index
+)
+
 
 def gen_uuid():
     return str(uuid.uuid4())
@@ -217,3 +221,25 @@ class TransactionLedger(Base):
     recipient_id = Column(String, nullable=True)
     mpesa_ref = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+class WaitlistEntry(Base):
+    __tablename__ = "waitlist_entries"
+
+    entry_id = Column(String, primary_key=True, default=gen_uuid)
+    event_id = Column(String, ForeignKey("events.event_id"), nullable=False, index=True)
+    user_id = Column(String, ForeignKey("users.user_id"), nullable=False, index=True)
+    position = Column(Integer, nullable=False)   # 1-based, assigned on insert
+    status = Column(
+        Enum("waiting", "promoted", "expired", "converted", "cancelled",
+             name="waitlist_status"),
+        default="waiting",
+    )
+    promoted_at = Column(DateTime, nullable=True)
+    expires_at = Column(DateTime, nullable=True)   # set when promoted
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        # prevent the same user from joining the same event twice while waiting
+        # (soft constraint enforced in code; index for lookup speed)
+        Index("ix_waitlist_event_status", "event_id", "status"),
+    )
