@@ -213,3 +213,17 @@ class PayoutOut(BaseModel):
 
 class ReservationStatusUpdate(BaseModel):
     status: str   # confirmed | cancelled | no_show
+
+# ---------- Waitlist ----------
+class WaitlistOut(BaseModel):
+    entry_id: str
+    event_id: str
+    user_id: str
+    position: int
+    status: str
+    promoted_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
