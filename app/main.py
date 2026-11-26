@@ -15,6 +15,7 @@ import qrcode
 import io
 from fastapi.responses import StreamingResponse
 from .dashboard import router as dashboard_router
+from .waitlist import router as waitlist_router, promote_on_cancel
 
 app = FastAPI(title="Aluta-style Nightlife API", version="0.2.0")
 app.include_router(auth_router)
